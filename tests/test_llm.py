@@ -37,6 +37,15 @@ def test_url_join_cases():
     assert build_chat_url("https://proxy.example.com/my/endpoint#") == "https://proxy.example.com/my/endpoint"
 
 
+def test_url_join_dashscope_style_v1_prefix():
+    """回归：带前缀的 OpenAI 兼容地址（路径以 /v1 结尾）应在其后追加
+    /chat/completions，而不是被整段替换或原样返回（曾导致 404）。"""
+    assert build_chat_url("https://dashscope.aliyuncs.com/compatible-mode/v1") == \
+        "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    assert build_chat_url("https://x.example.com/api/v1/") == \
+        "https://x.example.com/api/v1/chat/completions"
+
+
 def test_request_body():
     body = build_request_body("m", [{"role": "user", "content": "hi"}], 0.7, {"top_p": 0.9})
     assert body["model"] == "m"

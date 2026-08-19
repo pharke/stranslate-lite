@@ -13,7 +13,7 @@ macOS 优先（解决 STranslate 不支持 Mac 的问题），核心逻辑完全
 | `SendCtrlCV` 先释放卡住的修饰键 | `_release_stuck_modifiers`（等价实现） |
 | `CapturedTextHandler`（换行处理、`_`/`-` 转空格） | `prompts.postprocess_captured`（同规则） |
 | Prompt 模板 `$source`/`$target`/`$content`，多组提示词一组启用 | 同占位符；每组提示词可绑定独立快捷键 |
-| `UrlHelper.BuildFinalUrl`（`/`、`/v1` 自动补全、`#` 强制完整地址） | `llm.build_chat_url`（同规则） |
+| `UrlHelper.BuildFinalUrl`（`/`、`/v1` 自动补全、`#` 强制完整地址） | `llm.build_chat_url`（同规则：路径以 `/v1` 结尾时追加 `/chat/completions`，兼容 DashScope 等带前缀的兼容地址） |
 | `OpenAIProtocol`：流式 SSE 解析、`data:` 前缀、`[DONE]`、错误提取、`<think>` 过滤、非流式回退 | `llm.LlmClient`（同规则 + 增强） |
 | `Settings.MaxRetries`（原版声明但未消费） | 真实重试：网络错误 / 5xx / 429 / 408 按 `max_retries` × `retry_delay_ms` |
 | 主窗口置顶显示 + 替换翻译 | 非激活置顶 `NSPanel` 悬浮窗（不抢焦点、Esc 关闭、文本可选中复制） |

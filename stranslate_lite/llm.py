@@ -75,7 +75,14 @@ class CancelEvent:
 
 
 def build_chat_url(base_url: str, path: str = DEFAULT_CHAT_PATH) -> str:
-    """拼接最终请求地址（移植 UrlHelper.BuildFinalUrl 的 OpenAI 规则）。"""
+    """拼接最终请求地址（移植 UrlHelper.BuildFinalUrl 的 OpenAI 规则）。
+
+    - 路径为空或 `/`：补全 `/v1/chat/completions`；
+    - 路径以 `/v1` 结尾：在其后追加 `/chat/completions`
+      （兼容 https://dashscope.aliyuncs.com/compatible-mode/v1 这类带前缀的
+      OpenAI 兼容地址）；
+    - 其它完整地址原样保留（以 `#` 结尾 = 强制使用该完整地址）。
+    """
     base = (base_url or "").strip()
     if not base:
         raise LlmError("network", "API 地址为空，请检查配置 [api].base_url")
@@ -84,9 +91,13 @@ def build_chat_url(base_url: str, path: str = DEFAULT_CHAT_PATH) -> str:
         return base[:-1].rstrip("/")
     parts = urllib.parse.urlsplit(base)
     p = parts.path.rstrip("/") or "/"
-    if p in ("/", "/v1"):
-        return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, parts.query, parts.fragment))
-    return base
+    if p == "/":
+        new_path = DEFAULT_CHAT_PATH
+    elif p.endswith("/v1"):
+        new_path = p + "/chat/completions"
+    else:
+        return base
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, new_path, parts.query, parts.fragment))
 
 
 def build_request_body(model: str, messages: List[Dict[str, str]], temperature: float, extra: Dict[str, Any]) -> Dict[str, Any]:
