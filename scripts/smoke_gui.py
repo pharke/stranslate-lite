@@ -48,6 +48,7 @@ class _Phases(NSObject):
         try:
             step("menu_bar", adapter._setup_menu_bar)
             step("esc_monitor", adapter._install_esc_monitor)
+            step("click_away_monitors", adapter._install_click_away_monitors)
             # 主线程路径：_ui_after 直接执行
             step("show_result_main", lambda: adapter.show_result("job-1", "⏳ 调用中…"))
             step("update_result_main", lambda: adapter.update_result("job-1", "流式回答（主线程路径）"))
@@ -123,6 +124,30 @@ class _Phases(NSObject):
         except Exception as e:  # noqa: BLE001
             results.append(f"FAIL phaseAutoCloseVerify: {e!r}\n{traceback.format_exc()}")
             print(results[-1], flush=True)
+
+    def phaseClickAway_(self, timer):
+        """任意点击面板外立即关闭（不依赖先点击面板成为 key）。"""
+        try:
+            import Quartz
+
+            adapter.set_auto_close_seconds(0.0)  # 本阶段关掉自动关闭，避免干扰
+            adapter.show_result("job-5", "点击外部关闭测试")
+            check("clickaway_panel_shown", "job-5" in adapter._panels, f"panels={list(adapter._panels)}")
+            # 合成一次左键点击：主屏左上角（Quartz 坐标，远离面板钳制区域）
+            main_height = AppKit.NSScreen.mainScreen().frame().size.height
+            click = Quartz.CGEventCreateMouseEvent(None, Quartz.kCGEventLeftMouseDown, (5.0, main_height - 5.0), Quartz.kCGMouseButtonLeft)
+            Quartz.CGEventPost(Quartz.kCGHIDEventTap, click)
+            check("clickaway_posted", True)
+        except Exception as e:  # noqa: BLE001
+            results.append(f"FAIL phaseClickAway: {e!r}\n{traceback.format_exc()}")
+            print(results[-1], flush=True)
+
+    def phaseClickAwayVerify_(self, timer):
+        try:
+            check("clickaway_panel_closed", "job-5" not in adapter._panels, f"panels={list(adapter._panels)}")
+        except Exception as e:  # noqa: BLE001
+            results.append(f"FAIL phaseClickAwayVerify: {e!r}\n{traceback.format_exc()}")
+            print(results[-1], flush=True)
         fails = [r for r in results if r.startswith("FAIL")]
         print("SMOKE DONE", "FAILURES=%d" % len(fails), flush=True)
         AppKit.NSApp.terminate_(None)
@@ -139,6 +164,8 @@ def main():
         (2.2, "phaseResign:"),
         (2.8, "phaseAutoClose:"),
         (4.4, "phaseAutoCloseVerify:"),
+        (5.0, "phaseClickAway:"),
+        (5.8, "phaseClickAwayVerify:"),
     ):
         t = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(delay, p, sel, None, False)
         loop.addTimer_forMode_(t, NSDefaultRunLoopMode)

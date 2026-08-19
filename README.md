@@ -85,7 +85,7 @@ role = "system"
 content = "You are a professional translation engine. Only return the translated text."
 [[prompts."翻译".messages]]
 role = "user"
-content = "Please translate into $target:\n\n$content"
+content = "Translate the following text: if it is predominantly Chinese, translate it into English; otherwise, translate it into Simplified Chinese. Return only the translation, without any explanations:\n\n$content"
 
 [[hotkeys]]
 key = "alt+q"           # 修饰键：ctrl / alt(option) / shift / cmd；按键：字母/数字/F1-F12/方向键等
@@ -98,6 +98,8 @@ prompt = "代码审阅"
 ```
 
 提示词占位符与 STranslate 一致：`$content`（选中文本）、`$source`、`$target`。
+
+默认「翻译」提示词为双向自动：**中文为主 → 译成英文；其它语言 → 译成简体中文**。想改回固定目标语言，把 user 消息里的指令换成 `Please translate into $target: …` 并保留 `[api].target_lang` 即可。
 
 > 阿里云百炼（DashScope）用户：qwen3 系列默认开启思考模式，首字延迟较高。
 > 在配置中加 `[api.extra_body]` + `enable_thinking = false` 可关闭思考、显著提速（示例见上）。

@@ -229,6 +229,7 @@ class MacOSAdapter(PlatformAdapter):
         app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
         self._setup_menu_bar()
         self._install_esc_monitor()
+        self._install_click_away_monitors()
         self._install_sigint_handler()
         logger.info("进入 macOS 事件循环")
         app.run()
@@ -445,16 +446,18 @@ class MacOSAdapter(PlatformAdapter):
         if timer is not None:
             timer.invalidate()
 
+    def _close_panel_external(self, key: str, panel: "_ResultPanel") -> None:
+        """外部关闭路径（Esc / 点击面板外，主线程）：标记关闭并销毁面板。"""
+        with self._ui_lock:
+            self._mark_closed(key)
+        del self._panels[key]
+        self._destroy_panel(key, panel)
+
     def _install_esc_monitor(self) -> None:
         def _monitor(event):
             for key, panel in list(self._panels.items()):
                 if event.window() == panel.ns_panel and event.keyCode() == 53:  # Esc
-                    # 标记为已关闭：key 每次任务唯一，粘性集合可挡下
-                    # 已在队列中的 flush / 迟到的 show，防止面板被“复活”
-                    with self._ui_lock:
-                        self._mark_closed(key)
-                    del self._panels[key]
-                    self._destroy_panel(key, panel)
+                    self._close_panel_external(key, panel)
                     return None  # 消费事件
             return event
 
@@ -464,6 +467,35 @@ class MacOSAdapter(PlatformAdapter):
             AppKit.NSKeyDownMask, _monitor
         )
         # 注：addLocalMonitor 返回的对象与 handler 都必须保持引用
+
+    def _install_click_away_monitors(self) -> None:
+        """任意点击面板外立即关闭（无需先点面板），对应 STranslate 失焦即隐藏。
+
+        本地监视器处理本应用内的点击（面板外 = 关闭）；全局监视器观察
+        其它应用的点击（任意一次左键按下 = 关闭）。全局监视器需要
+        「辅助功能」权限；未授权时静默失效，仍保留 Esc/自动关闭等路径。
+        """
+
+        def on_local(event):
+            for key, panel in list(self._panels.items()):
+                if event.window() != panel.ns_panel:
+                    self._close_panel_external(key, panel)
+                    return event
+            return event
+
+        def on_global(event):
+            # 其它应用的点击：全部面板关闭
+            for key, panel in list(self._panels.items()):
+                self._close_panel_external(key, panel)
+
+        self._click_away_local = on_local  # 防 GC
+        self._click_away_global = on_global  # 防 GC
+        self._local_mouse_monitor = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            AppKit.NSLeftMouseDownMask, on_local
+        )
+        self._global_mouse_monitor = AppKit.NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+            AppKit.NSLeftMouseDownMask, on_global
+        )
 
     # ------------------------------------------------------------------
     # 菜单栏

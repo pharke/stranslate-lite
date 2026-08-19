@@ -376,7 +376,7 @@ role = "system"
 content = "You are a professional, authentic translation engine. You only return the translated text, without any explanations."
 [[prompts."翻译".messages]]
 role = "user"
-content = "Please translate into $target (avoid explaining the original text):\\n\\n$content"
+content = "Translate the following text: if it is predominantly Chinese, translate it into English; otherwise, translate it into Simplified Chinese. Return only the translation, without any explanations:\\n\\n$content"
 
 [prompts."代码审阅"]
 name = "代码审阅"
