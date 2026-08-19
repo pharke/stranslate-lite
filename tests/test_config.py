@@ -107,3 +107,18 @@ def test_ui_section_defaults_and_parsing():
         parse_config({**base, "ui": {"auto_close_seconds": 9999}})
     with pytest.raises(ConfigError, match="未知字段"):
         parse_config({**base, "ui": {"nope": 1}})
+
+
+def test_cache_section_defaults_and_parsing():
+    base = {
+        "prompts": {"p": {"name": "p", "messages": [{"role": "user", "content": "x"}]}},
+        "hotkeys": [{"key": "alt+q", "prompt": "p"}],
+    }
+    cfg = parse_config(dict(base)).cache
+    assert (cfg.enabled, cfg.max_entries, cfg.ttl_days) == (True, 500, 7)
+    cfg2 = parse_config({**base, "cache": {"enabled": False, "max_entries": 0, "ttl_days": 0}}).cache
+    assert (cfg2.enabled, cfg2.max_entries, cfg2.ttl_days) == (False, 0, 0)
+    with pytest.raises(ConfigError, match="布尔"):
+        parse_config({**base, "cache": {"enabled": "yes"}})
+    with pytest.raises(ConfigError, match="未知字段"):
+        parse_config({**base, "cache": {"nope": 1}})

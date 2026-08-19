@@ -16,6 +16,7 @@ from typing import List, Optional
 
 from . import __version__
 from .app import App
+from .cache import TranslationCache, cache_key
 from .config import ConfigError, config_path, load_config, write_example
 from .llm import CancelledError, LlmClient, LlmError
 from .platform import AdapterError, get_adapter
@@ -104,13 +105,23 @@ def cmd_translate(args: argparse.Namespace) -> int:
     target = hotkey.target_lang or prompt.target_lang or cfg.api.target_lang
     messages = render_messages(prompt, text, source, target)
 
+    # 缓存优先：命中直接输出，不调 API
+    cache = TranslationCache(cfg.cache)
+    ck = cache_key(cfg.api.model, messages)
+    cached = cache.get(ck)
+    if cached is not None:
+        sys.stdout.write(cached + "\n")
+        return 0
+
     client = LlmClient(cfg.api)
     try:
         if args.no_stream:
-            print(client.chat(messages))
+            result = client.chat(messages)
+            print(result)
         else:
-            client.chat_stream(messages, lambda t: (sys.stdout.write(t), sys.stdout.flush()))
+            result = client.chat_stream(messages, lambda t: (sys.stdout.write(t), sys.stdout.flush()))
             sys.stdout.write("\n")
+        cache.put(ck, result)
         return 0
     except CancelledError:
         return 130

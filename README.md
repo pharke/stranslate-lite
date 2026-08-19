@@ -17,6 +17,7 @@ macOS 优先（解决 STranslate 不支持 Mac 的问题），核心逻辑完全
 | `OpenAIProtocol`：流式 SSE 解析、`data:` 前缀、`[DONE]`、错误提取、`<think>` 过滤、非流式回退 | `llm.LlmClient`（同规则 + 增强） |
 | `Settings.MaxRetries`（原版声明但未消费） | 真实重试：网络错误 / 5xx / 429 / 408 按 `max_retries` × `retry_delay_ms` |
 | 主窗口置顶显示 + 替换翻译 | 非激活置顶 `NSPanel` 悬浮窗：不抢焦点、文本可选中复制、Esc 关闭；单窗口语义（新触发关闭旧面板，对齐 SingletonWindowOpener）；点击面板外即关闭（对齐 HideWhenDeactivated）；无更新 N 秒自动关闭（`[ui].auto_close_seconds`，0=永不） |
+| 历史缓存（SQLite，`checkCacheFirst && HistoryLimit > 0`） | 近期翻译缓存：翻译前先查缓存、命中即展示不调 API；成功后写入（键 = model + 完整渲染 messages）；SQLite 持久化 + LRU 淘汰 + TTL 过期 |
 | —（无） | 后台任务可取消：新热键触发即取消上一次调用（socket 级中断） |
 | —（无） | 配置热重载：提示词 / API / 取词设置保存即生效（下次触发自动读取） |
 
@@ -78,6 +79,11 @@ max_chars = 8000
 [ui]
 auto_close_seconds = 15  # 结果面板无更新后自动关闭秒数（0 = 永不；点击面板外随时关闭）
 
+[cache]
+enabled = true           # 近期翻译缓存：相同请求直接命中，省 token、零延迟
+max_entries = 500        # 最多缓存条数（LRU 淘汰；0 = 禁用缓存）
+ttl_days = 7             # 缓存有效期（0 = 永不过期）
+
 [prompts."翻译"]        # 提示词名含非 ASCII 时必须加引号（TOML 规范）
 name = "翻译"
 [[prompts."翻译".messages]]
@@ -104,6 +110,10 @@ prompt = "代码审阅"
 > 阿里云百炼（DashScope）用户：qwen3 系列默认开启思考模式，首字延迟较高。
 > 在配置中加 `[api.extra_body]` + `enable_thinking = false` 可关闭思考、显著提速（示例见上）。
 > 悬浮窗本身已过滤思考内容（`<think>` 块与 `reasoning_content` 字段），不会展示思考过程。
+
+> 缓存说明：`[cache]` 开启后（默认开），相同请求（模型 + 完整提示词渲染结果）第二次触发
+> 直接读缓存、不再调 API；缓存库为配置同目录的 `cache.db`（SQLite）。提示词/语言方向/
+> 原文任何变化都会自动生成新键，不会错命中；失败与取消的结果不入缓存。
 
 ## 命令
 

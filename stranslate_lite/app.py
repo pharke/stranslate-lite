@@ -15,6 +15,7 @@ import logging
 import threading
 from typing import Optional
 
+from .cache import TranslationCache, cache_key
 from .capture import CaptureError, capture_and_postprocess
 from .config import Config, ConfigError, Hotkey, load_config
 from .llm import CancelledError, CancelEvent, LlmClient, LlmError
@@ -30,6 +31,7 @@ class App:
     def __init__(self, config: Config, adapter: PlatformAdapter):
         self.config = config
         self.adapter = adapter
+        self._cache = TranslationCache(config.cache)
         self._lock = threading.Lock()
         self._current: Optional[CancelEvent] = None
         self._current_key: Optional[str] = None
@@ -81,6 +83,7 @@ class App:
             return
         self.config = cfg
         self.adapter.set_auto_close_seconds(cfg.ui.auto_close_seconds)
+        self._cache.configure(cfg.cache)
         with self._lock:
             if self._current is not None:
                 old_cancel, old_key = self._current, self._current_key
@@ -111,6 +114,14 @@ class App:
             target = hotkey.target_lang or prompt.target_lang or cfg.api.target_lang
             messages = render_messages(prompt, text, source, target)
 
+            # 缓存优先（对齐 STranslate checkCacheFirst）：命中直接展示，不调 API
+            ck = cache_key(cfg.api.model, messages)
+            cached = self._cache.get(ck)
+            if cached is not None:
+                logger.info("命中翻译缓存，跳过 API 调用")
+                self.adapter.show_result(key, cached)
+                return
+
             self.adapter.show_result(key, _PENDING_TEXT)
 
             # on_delta 收到的是流式增量，而面板更新是整段替换语义：
@@ -125,7 +136,9 @@ class App:
 
             # 每次任务都用最新配置实例化客户端（配合配置热重载）
             client = LlmClient(cfg.api)
-            client.chat_stream(messages, on_delta, cancel=cancel)
+            result = client.chat_stream(messages, on_delta, cancel=cancel)
+            # 成功后写入缓存（取消/失败/空结果不入缓存）
+            self._cache.put(ck, result)
         except CancelledError:
             self.adapter.close_result(key)
         except ConfigError as e:

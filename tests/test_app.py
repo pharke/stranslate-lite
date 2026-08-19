@@ -28,12 +28,17 @@ def _config(prompts=None, hotkeys=None) -> Config:
 
 
 @pytest.fixture
-def app(monkeypatch):
-    """构造 App，并让热重载始终返回内存中的配置（测试环境无配置文件）。"""
+def app(monkeypatch, tmp_path):
+    """构造 App，并让热重载始终返回内存中的配置（测试环境无配置文件）。
+
+    STRANSLATE_LITE_CONFIG 指向 tmp：缓存库 cache.db 也落在 tmp，
+    不会污染用户真实配置目录。
+    """
     import stranslate_lite.app as app_module
 
     cfg = _config()
     adapter = FakeAdapter()
+    monkeypatch.setenv("STRANSLATE_LITE_CONFIG", str(tmp_path / "config.toml"))
     monkeypatch.setattr(app_module, "load_config", lambda: cfg)
     return App(cfg, adapter), adapter
 
@@ -184,3 +189,73 @@ def test_auto_close_seconds_forwarded_to_adapter(app, monkeypatch):
 
     application.on_hotkey("alt+q")
     assert received == [15.0]  # 默认配置值
+
+
+def test_cache_hit_skips_llm(app, monkeypatch):
+    """相同内容的第二次触发命中缓存，不再调用 API（对齐 STranslate 历史缓存）。"""
+    import stranslate_lite.app as app_module
+
+    application, adapter = app
+    calls = {"n": 0}
+
+    class FakeClient:
+        def __init__(self, api):
+            pass
+
+        def chat_stream(self, messages, on_delta, cancel=None, temperature=None):
+            calls["n"] += 1
+            on_delta("新鲜回答")
+            return "新鲜回答"
+
+    monkeypatch.setattr(app_module, "LlmClient", FakeClient)
+    adapter.text = "旧内容"
+    adapter.rev = 1
+    adapter.copy_hook = lambda: (setattr(adapter, "text", "hello"), setattr(adapter, "rev", adapter.rev + 1))
+
+    application.on_hotkey("alt+q")
+    assert _wait_for_panel(adapter, "job-1") == "新鲜回答"
+    assert calls["n"] == 1
+
+    # 第二次触发：同一内容 → 命中缓存，不调 API
+    application.on_hotkey("alt+q")
+    assert _wait_for_panel(adapter, "job-2") == "新鲜回答"
+    assert calls["n"] == 1
+
+
+def test_cache_miss_after_capture_change(app, monkeypatch):
+    """不同取词内容 → 缓存未命中，正常调用 API。"""
+    import stranslate_lite.app as app_module
+
+    application, adapter = app
+    calls = {"n": 0}
+
+    class FakeClient:
+        def __init__(self, api):
+            pass
+
+        def chat_stream(self, messages, on_delta, cancel=None, temperature=None):
+            calls["n"] += 1
+            on_delta("回答")
+            return "回答"
+
+    monkeypatch.setattr(app_module, "LlmClient", FakeClient)
+    adapter.text = "旧内容"
+    adapter.rev = 1
+    captured_text = ["hello", "world"]
+
+    def copy_hook():
+        setattr(adapter, "text", captured_text[0])
+        setattr(adapter, "rev", adapter.rev + 1)
+
+    adapter.copy_hook = copy_hook
+    application.on_hotkey("alt+q")
+    _wait_for_panel(adapter, "job-1")
+
+    def copy_hook2():
+        setattr(adapter, "text", captured_text[1])
+        setattr(adapter, "rev", adapter.rev + 1)
+
+    adapter.copy_hook = copy_hook2
+    application.on_hotkey("alt+q")
+    _wait_for_panel(adapter, "job-2")
+    assert calls["n"] == 2

@@ -97,12 +97,20 @@ class UiConfig:
 
 
 @dataclass
+class CacheConfig:
+    enabled: bool = True  # 命中缓存的相同请求不再调用 API
+    max_entries: int = 500  # 最多缓存条数（LRU 淘汰；0 = 禁用缓存）
+    ttl_days: int = 7  # 缓存有效期（0 = 永不过期）
+
+
+@dataclass
 class Config:
     api: ApiConfig = field(default_factory=ApiConfig)
     prompts: Dict[str, Prompt] = field(default_factory=dict)
     hotkeys: List[Hotkey] = field(default_factory=list)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
     ui: UiConfig = field(default_factory=UiConfig)
+    cache: CacheConfig = field(default_factory=CacheConfig)
 
     def default_hotkey(self) -> Optional[Hotkey]:
         """CLI/无参调用时的默认触发器：第一个热键。"""
@@ -138,7 +146,7 @@ def config_path() -> Path:
 _ROLES = {"system", "user", "assistant"}
 _LINE_BREAKS = {"keep", "remove", "space"}
 _SEPARATORS = {"none", "underscore", "hyphen", "both"}
-_KNOWN_TOP_KEYS = {"api", "capture", "prompts", "hotkeys", "ui"}
+_KNOWN_TOP_KEYS = {"api", "capture", "prompts", "hotkeys", "ui", "cache"}
 
 
 def _err(path: str, msg: str) -> ConfigError:
@@ -276,6 +284,23 @@ def _parse_ui(t: Any) -> UiConfig:
     return u
 
 
+def _parse_cache(t: Any) -> CacheConfig:
+    t = _table(t, "cache")
+    for k in t:
+        if k not in CacheConfig.__dataclass_fields__:
+            raise _err(f"cache.{k}", "未知字段")
+    c = CacheConfig()
+    if "enabled" in t:
+        if not isinstance(t["enabled"], bool):
+            raise _err("cache.enabled", "应为布尔值")
+        c.enabled = t["enabled"]
+    if "max_entries" in t:
+        c.max_entries = _int(t["max_entries"], "cache.max_entries", 0, 100000)
+    if "ttl_days" in t:
+        c.ttl_days = _int(t["ttl_days"], "cache.ttl_days", 0, 365)
+    return c
+
+
 def _parse_hotkeys(t: Any, prompts: Dict[str, Prompt]) -> List[Hotkey]:
     if t is None:
         return []
@@ -313,8 +338,9 @@ def parse_config(data: Dict[str, Any]) -> Config:
     prompts = _parse_prompts(data.get("prompts", {}))
     capture = _parse_capture(data.get("capture", {}))
     ui = _parse_ui(data.get("ui", {}))
+    cache = _parse_cache(data.get("cache", {}))
     hotkeys = _parse_hotkeys(data.get("hotkeys"), prompts)
-    return Config(api=api, prompts=prompts, hotkeys=hotkeys, capture=capture, ui=ui)
+    return Config(api=api, prompts=prompts, hotkeys=hotkeys, capture=capture, ui=ui, cache=cache)
 
 
 def load_config(path: Optional[Path] = None) -> Config:
@@ -368,6 +394,11 @@ max_chars = 8000
 
 [ui]
 auto_close_seconds = 15     # 结果面板无更新后自动关闭秒数（0 = 永不自动关闭；点击面板外随时关闭）
+
+[cache]
+enabled = true              # 近期翻译缓存：相同请求直接命中，省 token、零延迟
+max_entries = 500           # 最多缓存条数（LRU 淘汰；0 = 禁用缓存）
+ttl_days = 7                # 缓存有效期（0 = 永不过期）
 
 [prompts."翻译"]
 name = "翻译"
