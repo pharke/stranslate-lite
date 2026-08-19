@@ -90,7 +90,10 @@ _EventHandlerUPP = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_vo
 _kEventClassKeyboard = struct.unpack(">I", b"keyb")[0]
 _kEventHotKeyPressed = 5
 _kEventParamDirectObject = struct.unpack(">I", b"----")[0]
-_typeEventHotKeyID = struct.unpack(">I", b"hkID")[0]
+# 实测 macOS 26 投递的 EventHotKeyID 参数类型为 'hkid'（小写）；历史文档
+# 常写作 'hkID'。优先用实测值，读不到再回退旧写法。
+_typeEventHotKeyID = struct.unpack(">I", b"hkid")[0]
+_typeEventHotKeyID_LEGACY = struct.unpack(">I", b"hkID")[0]
 _SIGNATURE = struct.unpack(">I", b"SLIT")[0]
 
 
@@ -182,13 +185,20 @@ class MacOSAdapter(PlatformAdapter):
         """Carbon 热键事件回调（主线程执行）。"""
         try:
             hk_id = _EventHotKeyID()
-            status = self._carbon.GetEventParameter(
-                the_event, _kEventParamDirectObject, _typeEventHotKeyID,
-                None, ctypes.sizeof(_EventHotKeyID), None,
-                ctypes.cast(ctypes.byref(hk_id), ctypes.c_void_p),
-            )
+            status = -1
+            # macOS 26 实测参数类型为 'hkid'；旧系统可能是 'hkID'，依次尝试
+            for typ in (_typeEventHotKeyID, _typeEventHotKeyID_LEGACY):
+                status = self._carbon.GetEventParameter(
+                    the_event, _kEventParamDirectObject, typ,
+                    None, ctypes.sizeof(_EventHotKeyID), None,
+                    ctypes.cast(ctypes.byref(hk_id), ctypes.c_void_p),
+                )
+                if status == 0:
+                    break
             if status == 0:
                 self._dispatch_hotkey(hk_id.id)
+            else:
+                logger.debug("热键事件参数读取失败（OSStatus=%s），忽略", status)
         except Exception:  # 回调内必须吞异常
             logger.exception("热键事件处理异常")
         return 0  # noErr

@@ -54,3 +54,48 @@ def test_unsupported_key_raises():
 
     with pytest.raises(AdapterError):
         a.register_hotkey("alt+insert", lambda: None)  # insert 不在 macOS KVK
+
+
+def test_handle_event_reads_hkid_type_and_dispatches():
+    """回归：macOS 26 实测投递的 EventHotKeyID 参数类型为 'hkid'（小写）。
+
+    曾误写为 'hkID'，GetEventParameter 返回 eventParamNotFoundErr，
+    热键静默无响应。用合成事件走完整 _handle_event 路径验证。
+    """
+    import ctypes
+    import struct
+
+    from stranslate_lite.platform.macos import (
+        _EventHotKeyID,
+        _SIGNATURE,
+        _kEventClassKeyboard,
+        _kEventHotKeyPressed,
+        _kEventParamDirectObject,
+        _typeEventHotKeyID,
+    )
+
+    assert _typeEventHotKeyID == struct.unpack(">I", b"hkid")[0]
+
+    a = MacOSAdapter()
+    fired = []
+    a._hotkeys[42] = ("test", lambda: fired.append(True))
+
+    c = a._carbon
+    c.CreateEvent.restype = ctypes.c_int32
+    c.CreateEvent.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_double, ctypes.c_uint32,
+        ctypes.POINTER(ctypes.c_void_p),
+    ]
+    c.SetEventParameter.restype = ctypes.c_int32
+    c.SetEventParameter.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+    ]
+    ev = ctypes.c_void_p()
+    assert c.CreateEvent(None, _kEventClassKeyboard, _kEventHotKeyPressed, 0.0, 0, ctypes.byref(ev)) == 0
+    hk = _EventHotKeyID(_SIGNATURE, 42)
+    assert c.SetEventParameter(
+        ev, _kEventParamDirectObject, _typeEventHotKeyID,
+        ctypes.sizeof(_EventHotKeyID), ctypes.byref(hk),
+    ) == 0
+    a._handle_event(None, ev, None)
+    assert fired == [True]
