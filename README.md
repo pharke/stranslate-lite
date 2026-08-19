@@ -152,13 +152,18 @@ launchctl load ~/Library/LaunchAgents/com.user.stranslate-lite.plist
 
 ## 打包 .app（可选）
 
+最小启动器方案（无需 PyInstaller，直接复用已安装的 venv）：
+
 ```bash
-pip install pyinstaller
-pyinstaller --noconfirm --windowed --name "stranslate-lite" \
-  --osx-bundle-identifier "com.user.stranslate-lite" \
-  stranslate_lite/cli.py
-# dist/stranslate-lite.app → 拖入「应用程序」；辅助功能授权勾选该 .app
+scripts/build_app.sh                        # 默认 venv ~/.venvs/stranslate-lite → ~/Applications/stranslate-lite.app
+scripts/build_app.sh /path/venv /out.app    # 指定 venv 与输出路径
 ```
+
+- 产物 `~/Applications/stranslate-lite.app`，`LSUIElement=true`：菜单栏常驻 SF Symbol「翻译」模板图标、无 Dock 图标、无终端窗口。
+- 内置**单实例守卫**（fcntl 文件锁）：重复双击不会因快捷键已被占用而“闪退”，而是静默复用已在运行的实例。
+- 运行日志：`~/Library/Logs/stranslate-lite.log`（启动信息、快捷键注册、异常）。
+- 首次从 .app 使用：需在 系统设置 → 隐私与安全性 → 辅助功能 勾选 **stranslate-lite.app**（授权对象是 .app 本身而非终端），授权后重启生效。
+- 开机自启：系统设置 → 通用 → 登录项 → 添加该 .app。
 
 ## 开发与测试
 
@@ -185,7 +190,8 @@ python scripts/smoke_gui.py   # 输出 SMOKE DONE FAILURES=0 即通过
 | --- | --- |
 | `check` 配置校验、`check --ping` 连通 | ✓ |
 | `check --hotkeys`（Carbon RegisterEventHotKey 注册） | ✓ 两个快捷键 OSStatus=0 |
-| 菜单栏「译」状态项与菜单 | ✓（GUI 冒烟） |
+| 菜单栏 SF Symbol「翻译」模板图标与菜单 | ✓（GUI 冒烟 + .app 实测） |
+| 单实例守卫：重复双击静默复用、不闪退 | ✓（fcntl 文件锁实测） |
 | 悬浮面板创建/流式更新/关闭/屏幕内定位 | ✓（GUI 冒烟） |
 | 后台线程 → 主线程投递（callAfter）与主线程直接执行 | ✓（GUI 冒烟） |
 | `run` 启动、Ctrl+C 优雅退出 | ✓（exit code 0） |

@@ -509,7 +509,20 @@ class MacOSAdapter(PlatformAdapter):
 
         bar = AppKit.NSStatusBar.systemStatusBar()
         item = bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
-        item.button().setTitle_("译")
+
+        # 用 SF Symbol 模板图标而非纯文字：模板图标会自动适配深浅色菜单栏，
+        # 且比单个汉字更稳定、更省菜单栏空间（刘海屏下不易被挤出）。
+        # 找不到符号（极旧系统）时回退到文字“译”。
+        img = AppKit.NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+            "translate", "stranslate-lite"
+        )
+        if img is not None:
+            img.setTemplate_(True)
+            item.button().setImage_(img)
+            item.button().setImagePosition_(AppKit.NSImageOnly)
+        else:
+            item.button().setTitle_("译")
+        item.button().setToolTip_("stranslate-lite")
 
         menu = AppKit.NSMenu.alloc().init()
 
@@ -517,6 +530,14 @@ class MacOSAdapter(PlatformAdapter):
             mi = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(title, action, key_equiv)
             mi.setTarget_(self._menu_actions)
             menu.addItem_(mi)
+
+        # 顶部只读标题项：点开菜单即明确“正在运行”，无需猜图标
+        head = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "stranslate-lite 正在运行", None, ""
+        )
+        head.setEnabled_(False)
+        menu.addItem_(head)
+        menu.addItem_(AppKit.NSMenuItem.separatorItem())
 
         add("打开配置文件所在文件夹", "openConfigFolderAction:", "")
         add("检查辅助功能权限", "openPrivacyAction:", "")

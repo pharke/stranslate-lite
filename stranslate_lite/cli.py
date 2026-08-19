@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from typing import List, Optional
 
@@ -34,6 +35,30 @@ def _load_or_die() -> Optional[object]:
         return None
 
 
+def _acquire_single_instance():
+    """单实例锁（POSIX）：用 fcntl 文件锁保证同一时刻只有一个 run 实例。
+
+    返回锁文件对象（进程存活期间需保持引用，退出时内核自动释放锁，无需清理、
+    也不怕 kill -9）；若已有实例持有锁则返回 None。非 POSIX 平台（Windows
+    实验适配）无 fcntl，返回哨兵对象表示“未加锁、继续运行”。
+    """
+    try:
+        import fcntl
+    except ImportError:  # pragma: no cover - Windows 无 fcntl
+        return object()
+    lock_path = config_path().with_name("run.lock")
+    lock_file = open(lock_path, "w")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock_file.close()
+        return None
+    lock_file.truncate(0)
+    lock_file.write(str(os.getpid()))
+    lock_file.flush()
+    return lock_file
+
+
 # ---------------------------------------------------------------------------
 # 子命令
 # ---------------------------------------------------------------------------
@@ -42,6 +67,12 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = _load_or_die()
     if cfg is None:
         return 1
+    # 单实例守卫：重复双击 .app 时，新实例会因热键已被占用而注册失败“闪退”；
+    # 这里直接复用已有实例（静默退出），避免二次启动的困惑。
+    instance_lock = _acquire_single_instance()
+    if instance_lock is None:
+        logger.info("已有 stranslate-lite 实例在运行，本次启动直接退出。")
+        return 0
     try:
         adapter = get_adapter()
     except AdapterError as e:
@@ -49,16 +80,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     app = App(cfg, adapter)
 
-    print(f"stranslate-lite v{__version__}（{adapter.name}）")
-    print(f"配置文件：{config_path()}")
+    # 走 logger（stderr，无缓冲）而非 print：.app 后台运行时 stdout 被重定向到
+    # 日志文件且按块缓冲，进程不退出就看不到启动信息；logger 实时落盘便于排查。
+    logger.info("stranslate-lite v%s（%s）", __version__, adapter.name)
+    logger.info("配置文件：%s", config_path())
     issues = adapter.permission_issues()
-    if issues:
-        print("⚠ 权限提示：")
-        for i in issues:
-            print(f"  - {i}")
+    for i in issues:
+        logger.warning("权限提示：%s", i)
     for h in cfg.hotkeys:
-        print(f"  快捷键 {h.key} → 提示词“{h.prompt}”")
+        logger.info("快捷键 %s → 提示词“%s”", h.key, h.prompt)
 
+    # instance_lock 在 app.start() 阻塞期间保持存活；进程退出时内核自动释放锁
     try:
         app.start()
     except KeyboardInterrupt:
