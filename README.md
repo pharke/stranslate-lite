@@ -16,7 +16,7 @@ macOS 优先（解决 STranslate 不支持 Mac 的问题），核心逻辑完全
 | `UrlHelper.BuildFinalUrl`（`/`、`/v1` 自动补全、`#` 强制完整地址） | `llm.build_chat_url`（同规则：路径以 `/v1` 结尾时追加 `/chat/completions`，兼容 DashScope 等带前缀的兼容地址） |
 | `OpenAIProtocol`：流式 SSE 解析、`data:` 前缀、`[DONE]`、错误提取、`<think>` 过滤、非流式回退 | `llm.LlmClient`（同规则 + 增强） |
 | `Settings.MaxRetries`（原版声明但未消费） | 真实重试：网络错误 / 5xx / 429 / 408 按 `max_retries` × `retry_delay_ms` |
-| 主窗口置顶显示 + 替换翻译 | 非激活置顶 `NSPanel` 悬浮窗（不抢焦点、Esc 关闭、文本可选中复制） |
+| 主窗口置顶显示 + 替换翻译 | 非激活置顶 `NSPanel` 悬浮窗：不抢焦点、文本可选中复制、Esc 关闭；单窗口语义（新触发关闭旧面板，对齐 SingletonWindowOpener）；点击面板外即关闭（对齐 HideWhenDeactivated）；无更新 N 秒自动关闭（`[ui].auto_close_seconds`，0=永不） |
 | —（无） | 后台任务可取消：新热键触发即取消上一次调用（socket 级中断） |
 | —（无） | 配置热重载：提示词 / API / 取词设置保存即生效（下次触发自动读取） |
 
@@ -75,6 +75,9 @@ line_break = "keep"     # keep | remove | space
 separators = "none"     # none | underscore | hyphen | both（代码翻译时建议 both）
 max_chars = 8000
 
+[ui]
+auto_close_seconds = 15  # 结果面板无更新后自动关闭秒数（0 = 永不；点击面板外随时关闭）
+
 [prompts."翻译"]        # 提示词名含非 ASCII 时必须加引号（TOML 规范）
 name = "翻译"
 [[prompts."翻译".messages]]
@@ -95,6 +98,10 @@ prompt = "代码审阅"
 ```
 
 提示词占位符与 STranslate 一致：`$content`（选中文本）、`$source`、`$target`。
+
+> 阿里云百炼（DashScope）用户：qwen3 系列默认开启思考模式，首字延迟较高。
+> 在配置中加 `[api.extra_body]` + `enable_thinking = false` 可关闭思考、显著提速（示例见上）。
+> 悬浮窗本身已过滤思考内容（`<think>` 块与 `reasoning_content` 字段），不会展示思考过程。
 
 ## 命令
 
@@ -176,6 +183,7 @@ python scripts/smoke_gui.py   # 输出 SMOKE DONE FAILURES=0 即通过
 | 修复：`enter`/`esc` 键名在 macOS/Windows 键码表缺失 | ✓ |
 | 修复：pyobjc 12 下 NSObject 子类构造方式（菜单栏动作） | ✓ |
 | 修复：macOS 26 热键事件参数类型为 `'hkid'`（曾误写 `'hkID'` 导致按键完全无反应） | ✓（真实按键 + 弹窗确认） |
+| 窗口行为：点击面板外关闭 / 无更新自动关闭 / 新触发关闭旧面板 | ✓（GUI 冒烟） |
 
 仍需人工确认：授予「辅助功能」权限后按 `Alt+Q` 取词 → 悬浮窗流式展示；无选中文本时的取词失败提示（已确认弹窗）；悬浮窗不抢焦点；Esc 关窗；菜单栏各项交互。
 

@@ -145,3 +145,42 @@ def test_unknown_hotkey_key_ignored(app):
     application.on_hotkey("alt+unregistered")
     time.sleep(0.1)
     assert not adapter.panels  # 未注册的触发被忽略，不产生面板
+
+
+def test_new_trigger_closes_previous_panel(app, monkeypatch):
+    """单窗口语义（对齐 STranslate SingletonWindowOpener）：新触发关闭旧面板。"""
+    import stranslate_lite.app as app_module
+
+    application, adapter = app
+
+    class FakeClient:
+        def __init__(self, api):
+            pass
+
+        def chat_stream(self, messages, on_delta, cancel=None, temperature=None):
+            on_delta("回答")
+
+    monkeypatch.setattr(app_module, "LlmClient", FakeClient)
+    adapter.text = "旧内容"
+    adapter.rev = 1
+    adapter.copy_hook = lambda: (setattr(adapter, "text", "hello"), setattr(adapter, "rev", adapter.rev + 1))
+
+    application.on_hotkey("alt+q")
+    assert _wait_for_panel(adapter, "job-1") == "回答"
+    # 第二次触发：旧面板（job-1）应被关闭，只保留新面板（job-2）
+    application.on_hotkey("alt+q")
+    assert _wait_for_panel(adapter, "job-2") == "回答"
+    assert "job-1" not in adapter.panels
+    assert set(adapter.panels) == {"job-2"}
+
+
+def test_auto_close_seconds_forwarded_to_adapter(app, monkeypatch):
+    """[ui].auto_close_seconds 应在每次触发时下发到适配器（配合配置热重载）。"""
+    import stranslate_lite.app as app_module
+
+    application, adapter = app
+    received = []
+    adapter.set_auto_close_seconds = lambda s: received.append(s)
+
+    application.on_hotkey("alt+q")
+    assert received == [15.0]  # 默认配置值

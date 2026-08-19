@@ -92,11 +92,17 @@ class CaptureConfig:
 
 
 @dataclass
+class UiConfig:
+    auto_close_seconds: float = 15.0  # 结果面板无更新 N 秒后自动关闭；0 = 永不自动关闭
+
+
+@dataclass
 class Config:
     api: ApiConfig = field(default_factory=ApiConfig)
     prompts: Dict[str, Prompt] = field(default_factory=dict)
     hotkeys: List[Hotkey] = field(default_factory=list)
     capture: CaptureConfig = field(default_factory=CaptureConfig)
+    ui: UiConfig = field(default_factory=UiConfig)
 
     def default_hotkey(self) -> Optional[Hotkey]:
         """CLI/无参调用时的默认触发器：第一个热键。"""
@@ -132,7 +138,7 @@ def config_path() -> Path:
 _ROLES = {"system", "user", "assistant"}
 _LINE_BREAKS = {"keep", "remove", "space"}
 _SEPARATORS = {"none", "underscore", "hyphen", "both"}
-_KNOWN_TOP_KEYS = {"api", "capture", "prompts", "hotkeys"}
+_KNOWN_TOP_KEYS = {"api", "capture", "prompts", "hotkeys", "ui"}
 
 
 def _err(path: str, msg: str) -> ConfigError:
@@ -259,6 +265,17 @@ def _parse_capture(t: Any) -> CaptureConfig:
     return c
 
 
+def _parse_ui(t: Any) -> UiConfig:
+    t = _table(t, "ui")
+    for k in t:
+        if k not in UiConfig.__dataclass_fields__:
+            raise _err(f"ui.{k}", "未知字段")
+    u = UiConfig()
+    if "auto_close_seconds" in t:
+        u.auto_close_seconds = _float(t["auto_close_seconds"], "ui.auto_close_seconds", 0.0, 600.0)
+    return u
+
+
 def _parse_hotkeys(t: Any, prompts: Dict[str, Prompt]) -> List[Hotkey]:
     if t is None:
         return []
@@ -295,8 +312,9 @@ def parse_config(data: Dict[str, Any]) -> Config:
     api = _parse_api(data.get("api", {}))
     prompts = _parse_prompts(data.get("prompts", {}))
     capture = _parse_capture(data.get("capture", {}))
+    ui = _parse_ui(data.get("ui", {}))
     hotkeys = _parse_hotkeys(data.get("hotkeys"), prompts)
-    return Config(api=api, prompts=prompts, hotkeys=hotkeys, capture=capture)
+    return Config(api=api, prompts=prompts, hotkeys=hotkeys, capture=capture, ui=ui)
 
 
 def load_config(path: Optional[Path] = None) -> Config:
@@ -339,6 +357,7 @@ retry_delay_ms = 1000
 source_lang = "Requires you to identify automatically"
 target_lang = "Simplified Chinese"
 # [api.extra_body]                            # 附加请求体参数（不能覆盖 model/messages/stream）
+# enable_thinking = false                     # 例如：阿里云百炼 qwen3 系列关闭思考模式，显著降低首字延迟
 # top_p = 0.9
 
 [capture]
@@ -346,6 +365,9 @@ timeout_ms = 500            # 模拟复制后等待剪贴板变化的最长时�
 line_break = "keep"         # keep | remove | space：取词文本的换行处理
 separators = "none"         # none | underscore | hyphen | both：标识符内 _/- 转空格（利于代码翻译）
 max_chars = 8000
+
+[ui]
+auto_close_seconds = 15     # 结果面板无更新后自动关闭秒数（0 = 永不自动关闭；点击面板外随时关闭）
 
 [prompts."翻译"]
 name = "翻译"

@@ -109,6 +109,9 @@ class PlatformAdapter(ABC):
     def mouse_position(self) -> Optional[Tuple[int, int]]:
         return None
 
+    def set_auto_close_seconds(self, seconds: float) -> None:
+        """结果面板无更新 N 秒后自动关闭（0 = 永不自动关闭）。默认空实现。"""
+
     def permission_issues(self) -> List[str]:
         """返回需要用户处理的事项（人类可读）。"""
         return []

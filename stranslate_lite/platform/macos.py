@@ -134,6 +134,14 @@ class MacOSAdapter(PlatformAdapter):
         # 已关闭的任务序号（key 形如 "job-N"）。粘性集合：面板关闭后
         # 迟到的 flush/show 不得把它“复活”；只保留最近 512 个，防无限增长。
         self._closed: set = set()
+        # 面板自动关闭（对齐 STranslate HideWhenDeactivated + 兜底定时）：
+        # - 点击面板外（resign key）立即关闭；
+        # - 无更新 auto_close_seconds 秒后自动关闭（0 = 永不，流式期间重置）。
+        self._auto_close_seconds: float = 0.0
+        self._auto_close_timers: Dict[str, AppKit.NSTimer] = {}
+        self._timer_actions: Optional[AppKit.NSObject] = None
+        self._panel_observer: Optional[AppKit.NSObject] = None
+        self._panel_key_by_window: Dict[object, str] = {}
 
     @staticmethod
     def _key_num(key: str) -> int:
@@ -367,6 +375,10 @@ class MacOSAdapter(PlatformAdapter):
             self._scheduled.discard(key)  # 已在队列中的 flush 会被 _closed 挡下
         self._ui_after(self._close_on_main, key)
 
+    def set_auto_close_seconds(self, seconds: float) -> None:
+        """结果面板无更新 N 秒后自动关闭（0 = 永不）。"""
+        self._auto_close_seconds = float(seconds)
+
     def _show_on_main(self, key: str, text: str) -> None:
         if self._key_num(key) in self._closed:
             return  # 面板已被关闭（迟到的 callAfter）
@@ -374,8 +386,19 @@ class MacOSAdapter(PlatformAdapter):
         if panel is None:
             panel = _ResultPanel()
             self._panels[key] = panel
+            if self._panel_observer is None:
+                observer = _PanelObserver.alloc().init()
+                observer._adapter = self  # type: ignore[attr-defined]
+                self._panel_observer = observer
+            # 点击面板外（resign key）→ 关闭（对应 STranslate HideWhenDeactivated）
+            AppKit.NSNotificationCenter.defaultCenter().addObserver_selector_name_object_(
+                self._panel_observer, "panelResignedKey:", AppKit.NSWindowDidResignKeyNotification,
+                panel.ns_panel,
+            )
+            self._panel_key_by_window[panel.ns_panel] = key
         panel.set_text(text)
         panel.show()
+        self._reset_auto_close(key)
 
     def _update_on_main(self, key: str, text: str) -> None:
         panel = self._panels.get(key)
@@ -383,11 +406,44 @@ class MacOSAdapter(PlatformAdapter):
             self._show_on_main(key, text)
             return
         panel.set_text(text)
+        self._reset_auto_close(key)  # 流式期间每次更新重置自动关闭计时
 
     def _close_on_main(self, key: str) -> None:
         panel = self._panels.pop(key, None)
         if panel is not None:
-            panel.close()
+            self._destroy_panel(key, panel)
+
+    def _destroy_panel(self, key: str, panel: "_ResultPanel") -> None:
+        self._cancel_auto_close(key)
+        self._panel_key_by_window.pop(panel.ns_panel, None)
+        if self._panel_observer is not None:
+            AppKit.NSNotificationCenter.defaultCenter().removeObserver_name_object_(
+                self._panel_observer, AppKit.NSWindowDidResignKeyNotification, panel.ns_panel
+            )
+        panel.close()
+
+    # ------------------------------------------------------------------
+    # 面板自动关闭（主线程）
+    # ------------------------------------------------------------------
+    def _reset_auto_close(self, key: str) -> None:
+        if self._auto_close_seconds <= 0:
+            return
+        old = self._auto_close_timers.pop(key, None)
+        if old is not None:
+            old.invalidate()
+        if self._timer_actions is None:
+            actions = _TimerActions.alloc().init()
+            actions._adapter = self  # type: ignore[attr-defined]
+            self._timer_actions = actions
+        timer = AppKit.NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            self._auto_close_seconds, self._timer_actions, "autoClose:", key, False
+        )
+        self._auto_close_timers[key] = timer
+
+    def _cancel_auto_close(self, key: str) -> None:
+        timer = self._auto_close_timers.pop(key, None)
+        if timer is not None:
+            timer.invalidate()
 
     def _install_esc_monitor(self) -> None:
         def _monitor(event):
@@ -398,7 +454,7 @@ class MacOSAdapter(PlatformAdapter):
                     with self._ui_lock:
                         self._mark_closed(key)
                     del self._panels[key]
-                    panel.close()
+                    self._destroy_panel(key, panel)
                     return None  # 消费事件
             return event
 
@@ -527,6 +583,31 @@ class _ResultPanel:
 
     def close(self) -> None:
         self.ns_panel.close()
+
+
+class _TimerActions(NSObject):
+    """NSTimer 目标：结果面板无更新自动关闭。adapter 经实例属性挂载。"""
+
+    def autoClose_(self, timer) -> None:  # noqa: N802
+        adapter = self._adapter  # type: ignore[attr-defined]
+        key = timer.userInfo()
+        adapter._auto_close_timers.pop(key, None)
+        adapter.close_result(key)
+
+
+class _PanelObserver(NSObject):
+    """观察结果面板失去 key 状态（用户点击面板外）→ 关闭面板。
+
+    对应 STranslate 主窗口的 HideWhenDeactivated（默认 true）行为：
+    失焦即隐藏，无需手动关闭。
+    """
+
+    def panelResignedKey_(self, notification) -> None:  # noqa: N802
+        adapter = self._adapter  # type: ignore[attr-defined]
+        panel = notification.object()
+        key = adapter._panel_key_by_window.get(panel)
+        if key is not None:
+            adapter.close_result(key)
 
 
 class _MenuActions(NSObject):

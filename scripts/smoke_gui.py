@@ -6,6 +6,8 @@
 3. Esc 监视器安装
 4. 后台线程 → 主线程投递（_ui_after / callAfter 路径）
 5. 面板几何定位（鼠标附近、屏幕边界内）
+6. 点击面板外关闭（resign key 通知 → 面板销毁，对应 STranslate HideWhenDeactivated）
+7. 无更新自动关闭计时（[ui].auto_close_seconds）
 
 所有阶段定时器在 app.run() 之前一次性排入（真实应用中面板更新由
 后台任务线程经 callAfter 投递，与本脚本 bg 线程路径一致）。
@@ -89,6 +91,38 @@ class _Phases(NSObject):
         except Exception as e:  # noqa: BLE001
             results.append(f"FAIL phaseVerify: {e!r}\n{traceback.format_exc()}")
             print(results[-1], flush=True)
+
+    def phaseResign_(self, timer):
+        """点击面板外 → resign key 通知 → 面板销毁。"""
+        try:
+            adapter.show_result("job-3", "失焦关闭测试")
+            panel = adapter._panels.get("job-3")
+            check("resign_panel_shown", panel is not None)
+            if panel is not None:
+                AppKit.NSNotificationCenter.defaultCenter().postNotificationName_object_(
+                    AppKit.NSWindowDidResignKeyNotification, panel.ns_panel
+                )
+            check("resign_closed_panel", "job-3" not in adapter._panels, f"panels={list(adapter._panels)}")
+        except Exception as e:  # noqa: BLE001
+            results.append(f"FAIL phaseResign: {e!r}\n{traceback.format_exc()}")
+            print(results[-1], flush=True)
+
+    def phaseAutoClose_(self, timer):
+        """无更新 1 秒自动关闭：show 后 1 秒应消失。"""
+        try:
+            adapter.set_auto_close_seconds(1.0)
+            adapter.show_result("job-4", "自动关闭测试")
+            check("autoclose_panel_shown", "job-4" in adapter._panels, f"panels={list(adapter._panels)}")
+        except Exception as e:  # noqa: BLE001
+            results.append(f"FAIL phaseAutoClose: {e!r}\n{traceback.format_exc()}")
+            print(results[-1], flush=True)
+
+    def phaseAutoCloseVerify_(self, timer):
+        try:
+            check("autoclose_panel_closed", "job-4" not in adapter._panels, f"panels={list(adapter._panels)}")
+        except Exception as e:  # noqa: BLE001
+            results.append(f"FAIL phaseAutoCloseVerify: {e!r}\n{traceback.format_exc()}")
+            print(results[-1], flush=True)
         fails = [r for r in results if r.startswith("FAIL")]
         print("SMOKE DONE", "FAILURES=%d" % len(fails), flush=True)
         AppKit.NSApp.terminate_(None)
@@ -99,7 +133,13 @@ def main():
     app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
     p = _Phases.alloc().init()
     loop = NSRunLoop.currentRunLoop()
-    for delay, sel in ((0.2, "phaseSetup:"), (1.6, "phaseVerify:")):
+    for delay, sel in (
+        (0.2, "phaseSetup:"),
+        (1.6, "phaseVerify:"),
+        (2.2, "phaseResign:"),
+        (2.8, "phaseAutoClose:"),
+        (4.4, "phaseAutoCloseVerify:"),
+    ):
         t = NSTimer.timerWithTimeInterval_target_selector_userInfo_repeats_(delay, p, sel, None, False)
         loop.addTimer_forMode_(t, NSDefaultRunLoopMode)
     app.run()

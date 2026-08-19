@@ -33,6 +33,7 @@ class App:
         self._lock = threading.Lock()
         self._current: Optional[CancelEvent] = None
         self._current_key: Optional[str] = None
+        self._last_panel_key: Optional[str] = None
         self._jobs = itertools.count(1)
 
     # ------------------------------------------------------------------
@@ -79,6 +80,7 @@ class App:
             )
             return
         self.config = cfg
+        self.adapter.set_auto_close_seconds(cfg.ui.auto_close_seconds)
         with self._lock:
             if self._current is not None:
                 old_cancel, old_key = self._current, self._current_key
@@ -88,6 +90,11 @@ class App:
             key = f"job-{next(self._jobs)}"
             self._current = cancel
             self._current_key = key
+        # 单窗口语义（对齐 STranslate SingletonWindowOpener）：新触发先关掉
+        # 上一个结果面板（哪怕其任务早已完成），避免窗口堆积。
+        if self._last_panel_key:
+            self.adapter.close_result(self._last_panel_key)
+        self._last_panel_key = key
         threading.Thread(target=self._run_job, args=(cfg, hotkey, cancel, key), daemon=True, name=f"job-{key}").start()
 
     # ------------------------------------------------------------------
