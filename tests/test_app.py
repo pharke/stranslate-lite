@@ -27,12 +27,29 @@ def _config(prompts=None, hotkeys=None) -> Config:
     )
 
 
-def test_hotkey_triggers_full_pipeline(monkeypatch):
+@pytest.fixture
+def app(monkeypatch):
+    """构造 App，并让热重载始终返回内存中的配置（测试环境无配置文件）。"""
     import stranslate_lite.app as app_module
 
+    cfg = _config()
     adapter = FakeAdapter()
+    monkeypatch.setattr(app_module, "load_config", lambda: cfg)
+    return App(cfg, adapter), adapter
+
+
+def _wait_for_panel(adapter, key, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline and key not in adapter.panels:
+        time.sleep(0.02)
+    return adapter.panels.get(key)
+
+
+def test_hotkey_triggers_full_pipeline(app, monkeypatch):
+    import stranslate_lite.app as app_module
+
+    application, adapter = app
     captured: dict = {}
-    deltas: dict = {}
 
     class FakeClient:
         def __init__(self, api):
@@ -45,25 +62,20 @@ def test_hotkey_triggers_full_pipeline(monkeypatch):
 
     monkeypatch.setattr(app_module, "LlmClient", FakeClient)
 
-    app = App(_config(), adapter)
     # 模拟「选中文本后按热键」：复制钩子写入新剪贴板
     adapter.text = "旧内容"
     adapter.rev = 1
     adapter.copy_hook = lambda: (setattr(adapter, "text", "hello"), setattr(adapter, "rev", 2))
 
-    app.on_hotkey(app.config.hotkeys[0])
-    deadline = time.time() + 2
-    while time.time() < deadline and "job-1" not in adapter.panels:
-        time.sleep(0.02)
-
+    application.on_hotkey("alt+q")
+    assert _wait_for_panel(adapter, "job-1") == "你好世界"
     assert captured["messages"] == [{"role": "user", "content": "hello"}]
-    assert adapter.panels["job-1"] == "你好世界"
 
 
-def test_single_flight_cancels_previous(monkeypatch):
+def test_single_flight_cancels_previous(app, monkeypatch):
     import stranslate_lite.app as app_module
 
-    adapter = FakeAdapter()
+    application, adapter = app
     start_event = threading.Event()
     cancelled: dict = {}
 
@@ -80,24 +92,23 @@ def test_single_flight_cancels_previous(monkeypatch):
 
     monkeypatch.setattr(app_module, "LlmClient", FakeClient)
 
-    app = App(_config(), adapter)
     adapter.text = "旧内容"
     adapter.rev = 1
     adapter.copy_hook = lambda: (setattr(adapter, "text", "hello"), setattr(adapter, "rev", 2))
-    app.on_hotkey(app.config.hotkeys[0])
+    application.on_hotkey("alt+q")
     assert start_event.wait(2)
     # 第二个触发应取消第一个任务
-    app.on_hotkey(app.config.hotkeys[0])
+    application.on_hotkey("alt+q")
     deadline = time.time() + 2
     while time.time() < deadline and cancelled.get("yes") is None:
         time.sleep(0.02)
     assert cancelled.get("yes") is True
 
 
-def test_llm_error_shown_in_panel(monkeypatch):
+def test_llm_error_shown_in_panel(app, monkeypatch):
     import stranslate_lite.app as app_module
 
-    adapter = FakeAdapter()
+    application, adapter = app
 
     class FakeClient:
         def __init__(self, api):
@@ -108,26 +119,29 @@ def test_llm_error_shown_in_panel(monkeypatch):
 
     monkeypatch.setattr(app_module, "LlmClient", FakeClient)
 
-    app = App(_config(), adapter)
     adapter.text = ""
     adapter.rev = 1
     adapter.copy_hook = lambda: (setattr(adapter, "text", "hello"), setattr(adapter, "rev", 2))
-    app.on_hotkey(app.config.hotkeys[0])
-    deadline = time.time() + 2
-    while time.time() < deadline and "job-1" not in adapter.panels:
-        time.sleep(0.02)
-    assert "调用失败" in adapter.panels.get("job-1", "")
+    application.on_hotkey("alt+q")
+    panel = _wait_for_panel(adapter, "job-1")
+    assert panel is not None and "调用失败" in panel
 
 
-def test_capture_failure_message(monkeypatch):
+def test_capture_failure_message(app, monkeypatch):
     import stranslate_lite.app as app_module
 
-    adapter = FakeAdapter()
+    application, adapter = app
     adapter.text = "旧内容"  # 复制后不变 → 取词失败
 
-    app = App(_config(), adapter)
-    app.on_hotkey(app.config.hotkeys[0])
-    deadline = time.time() + 2
-    while time.time() < deadline and "job-1" not in adapter.panels:
-        time.sleep(0.02)
-    assert "取词失败" in adapter.panels.get("job-1", "")
+    application.on_hotkey("alt+q")
+    panel = _wait_for_panel(adapter, "job-1")
+    assert panel is not None and "取词失败" in panel
+
+
+def test_unknown_hotkey_key_ignored(app):
+    import stranslate_lite.app as app_module
+
+    application, adapter = app
+    application.on_hotkey("alt+unregistered")
+    time.sleep(0.1)
+    assert not adapter.panels  # 未注册的触发被忽略，不产生面板

@@ -3,7 +3,7 @@
 用法：
   stranslate-lite run                 # 启动后台工具（全局热键 + 悬浮窗）
   stranslate-lite translate <文本>     # 一次性调用（可 --prompt 指定提示词，或从 stdin 读入）
-  stranslate-lite check [--ping]       # 校验配置与系统权限；--ping 发送最小请求测试 API
+  stranslate-lite check [--ping|--hotkeys]  # 校验配置与系统权限；--ping 测试 API；--hotkeys 检测热键冲突
   stranslate-lite config --init|--path # 生成示例配置 / 打印配置路径
 """
 
@@ -18,7 +18,7 @@ from . import __version__
 from .app import App
 from .config import ConfigError, config_path, load_config, write_example
 from .llm import CancelledError, LlmClient, LlmError
-from .platform import get_adapter
+from .platform import AdapterError, get_adapter
 from .prompts import render_messages
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -41,7 +41,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = _load_or_die()
     if cfg is None:
         return 1
-    adapter = get_adapter()
+    try:
+        adapter = get_adapter()
+    except AdapterError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 1
     app = App(cfg, adapter)
 
     print(f"stranslate-lite v{__version__}（{adapter.name}）")
@@ -58,6 +62,9 @@ def cmd_run(args: argparse.Namespace) -> int:
         app.start()
     except KeyboardInterrupt:
         app.stop()
+    except AdapterError as e:
+        print(f"错误：{e}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -135,6 +142,20 @@ def cmd_check(args: argparse.Namespace) -> int:
     else:
         print("✓ 系统权限检查通过（或当前平台无权限要求）")
 
+    if args.hotkeys:
+        print("→ 尝试注册快捷键（检测是否被占用）…")
+        failed = False
+        for h in cfg.hotkeys:
+            try:
+                adapter.register_hotkey(h.key, lambda: None)
+                print(f"  ✓ {h.key} → “{h.prompt}” 注册成功")
+            except AdapterError as e:
+                failed = True
+                print(f"  ✗ {e}", file=sys.stderr)
+        if failed:
+            print("提示：冲突的快捷键请在配置文件中更换组合后重启本工具。", file=sys.stderr)
+            return 1
+
     if args.ping:
         print("→ 正在向 API 发送最小请求测试…")
         if not api_key:
@@ -194,6 +215,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_c = sub.add_parser("check", help="校验配置与权限")
     p_c.add_argument("--ping", action="store_true", help="发送最小请求测试 API 连通性")
+    p_c.add_argument("--hotkeys", action="store_true", help="尝试注册每个快捷键并报告冲突")
     p_c.set_defaults(func=cmd_check)
 
     p_cfg = sub.add_parser("config", help="配置管理")

@@ -12,16 +12,16 @@
   内容为可滚动可复制的 NSTextView，流式更新。
 - 菜单栏常驻入口：NSStatusItem（打开配置目录 / 检查权限 / 退出）。
 
-线程模型：LLM 请求在后台线程执行；所有 AppKit 对象的创建与修改都通过
-PyObjCTools.AppHelper.callAfter 投递到主线程执行。
+线程模型：LLM 请求在后台线程执行；所有 AppKit 对象的创建与修改都只发生在
+主线程——后台线程经 callAfter 投递，主线程路径直接执行（见 _ui_after）。
 """
 
 from __future__ import annotations
 
 import ctypes
-import ctypes.util
 import logging
 import struct
+import threading
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .base import AdapterError, PlatformAdapter, parse_hotkey_spec
@@ -47,9 +47,10 @@ KVK: Dict[str, int] = {
     "c": 0x08, "v": 0x09, "b": 0x0B, "q": 0x0C, "w": 0x0D, "e": 0x0E, "r": 0x0F, "y": 0x10,
     "t": 0x11, "1": 0x12, "2": 0x13, "3": 0x14, "4": 0x15, "6": 0x16, "5": 0x17, "=": 0x18,
     "9": 0x19, "7": 0x1A, "-": 0x1B, "8": 0x1C, "0": 0x1D, "]": 0x1E, "o": 0x1F, "u": 0x20,
-    "[": 0x21, "i": 0x22, "p": 0x23, "return": 0x24, "l": 0x25, "j": 0x26, "'": 0x27, "k": 0x28,
-    ";": 0x29, "\\": 0x2A, ",": 0x2B, "/": 0x2C, "n": 0x2D, "m": 0x2E, ".": 0x2F, "tab": 0x30,
-    "space": 0x31, "`": 0x32, "delete": 0x33, "escape": 0x35, "f1": 0x7A, "f2": 0x78, "f3": 0x63,
+    "[": 0x21, "i": 0x22, "p": 0x23, "return": 0x24, "enter": 0x24, "l": 0x25, "j": 0x26,
+    "'": 0x27, "k": 0x28, ";": 0x29, "\\": 0x2A, ",": 0x2B, "/": 0x2C, "n": 0x2D, "m": 0x2E,
+    ".": 0x2F, "tab": 0x30, "space": 0x31, "`": 0x32, "delete": 0x33, "escape": 0x35,
+    "esc": 0x35, "f1": 0x7A, "f2": 0x78, "f3": 0x63,
     "f4": 0x76, "f5": 0x60, "f6": 0x61, "f7": 0x62, "f8": 0x64, "f9": 0x65, "f10": 0x6D,
     "f11": 0x67, "f12": 0x6F, "f13": 0x69, "f14": 0x6B, "f15": 0x71, "f16": 0x6A, "home": 0x73,
     "end": 0x77, "pageup": 0x74, "pagedown": 0x79, "left": 0x7B, "right": 0x7C, "down": 0x7D, "up": 0x7E,
@@ -123,6 +124,26 @@ class MacOSAdapter(PlatformAdapter):
         self._menu_actions: Optional[AppKit.NSObject] = None
         self._status_item: Optional[AppKit.NSStatusItem] = None
         self._callback = _EventHandlerUPP(self._handle_event)  # 防 GC
+        # 结果面板 UI 节流：后台线程的流式增量先合并，再按主循环节拍投递
+        self._ui_lock = threading.Lock()
+        self._latest: Dict[str, str] = {}
+        self._scheduled: set = set()
+        # 已关闭的任务序号（key 形如 "job-N"）。粘性集合：面板关闭后
+        # 迟到的 flush/show 不得把它“复活”；只保留最近 512 个，防无限增长。
+        self._closed: set = set()
+
+    @staticmethod
+    def _key_num(key: str) -> int:
+        try:
+            return int(key.rsplit("-", 1)[1])
+        except (IndexError, ValueError):  # 兼容非 job-N 形式的 key
+            return 0
+
+    def _mark_closed(self, key: str) -> None:
+        num = self._key_num(key)
+        self._closed.add(num)
+        if len(self._closed) > 512:  # 窗口剪枝
+            self._closed = {n for n in self._closed if n > num - 256}
 
     # ------------------------------------------------------------------
     # Carbon 原型
@@ -140,9 +161,10 @@ class MacOSAdapter(PlatformAdapter):
         c.GetEventDispatcherTarget.restype = ctypes.c_void_p
         c.GetApplicationEventTarget.argtypes = []
         c.GetApplicationEventTarget.restype = ctypes.c_void_p
-        c.NewEventHandlerUPP.argtypes = [_EventHandlerUPP]
-        c.NewEventHandlerUPP.restype = ctypes.c_void_p
-        c.DisposeEventHandlerUPP.argtypes = [ctypes.c_void_p]
+        # 注：64 位 Carbon 中 UPP（通用过程指针）已退化为普通函数指针，
+        # NewEventHandlerUPP/DisposeEventHandlerUPP 只是头文件里的宏，
+        # 在 Carbon.framework 中没有对应 dlsym 符号——直接把 CFUNCTYPE 回调
+        # 指针传给 InstallEventHandler 即可，不能按符号加载。
         c.InstallEventHandler.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint32, ctypes.POINTER(_EventTypeSpec),
             ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
@@ -189,18 +211,35 @@ class MacOSAdapter(PlatformAdapter):
         app.setActivationPolicy_(AppKit.NSApplicationActivationPolicyAccessory)
         self._setup_menu_bar()
         self._install_esc_monitor()
+        self._install_sigint_handler()
         logger.info("进入 macOS 事件循环")
         app.run()
 
+    def _install_sigint_handler(self) -> None:
+        """让 Ctrl+C（SIGINT）能打断空闲的 NSApplication 运行循环。
+
+        运行循环空闲时阻塞在 C 层，Python 默认的 SIGINT 不会触发
+        KeyboardInterrupt；改用 MachSignals 经 mach port 投递到主线程
+        （等价 pyobjc runEventLoop 的 installInterrupt 机制），使
+        Ctrl+C 在终端前台运行时立即可靠退出。
+        """
+        try:
+            import signal as _signal
+            from PyObjCTools import MachSignals
+            from PyObjCTools.AppHelper import machInterrupt
+
+            MachSignals.signal(_signal.SIGINT, machInterrupt)
+        except Exception:  # pragma: no cover - 防御性兜底
+            logger.exception("安装 SIGINT 处理器失败（Ctrl+C 退出将不可用，请用菜单栏退出）")
+
     def stop(self) -> None:
-        def _stop():
-            AppKit.NSApp.terminate_(None)
-        callAfter(_stop)
+        self._ui_after(lambda: AppKit.NSApp.terminate_(None))
 
     def _install_event_handler(self) -> None:
         if self._handler_upp is not None:
             return
-        upp = self._carbon.NewEventHandlerUPP(self._callback)
+        # 64 位 Carbon：UPP 即普通函数指针，直接投递 CFUNCTYPE 指针
+        upp = ctypes.cast(self._callback, ctypes.c_void_p)
         spec = (_EventTypeSpec * 1)(_EventTypeSpec(_kEventClassKeyboard, _kEventHotKeyPressed))
         status = self._carbon.InstallEventHandler(
             self._target, upp, 1, spec, None, ctypes.byref(self._handler_ref)
@@ -274,16 +313,53 @@ class MacOSAdapter(PlatformAdapter):
     # ------------------------------------------------------------------
     # 结果展示（后台线程安全：内部投递主线程）
     # ------------------------------------------------------------------
+    def _ui_after(self, fn: Callable, *args) -> None:
+        """把 fn 投递到主线程执行。
+
+        后台线程经 AppHelper.callAfter 投递；主线程直接执行。
+        实测 pyobjc 12.2 / macOS 26：主线程上调用 performSelectorOnMainThread
+        （callAfter 的底层实现）不会被 NSApplication 运行循环处理——主线程
+        直接执行既规避该问题，也少一次排队。所有 AppKit 对象的创建与修改
+        因此仍然只发生在主线程。
+        """
+        if AppKit.NSThread.isMainThread():
+            fn(*args)
+        else:
+            callAfter(fn, *args)
+
     def show_result(self, key: str, text: str) -> None:
-        callAfter(self._show_on_main, key, text)
+        with self._ui_lock:
+            self._latest[key] = text
+        self._ui_after(self._show_on_main, key, text)
 
     def update_result(self, key: str, text: str) -> None:
-        callAfter(self._update_on_main, key, text)
+        """流式更新（后台线程可调）：合并到最近一次未投递的最新文本，避免
+        每个 token 都往主线程投递一次阻塞 UI。"""
+        with self._ui_lock:
+            self._latest[key] = text
+            if key in self._scheduled or self._key_num(key) in self._closed:
+                return
+            self._scheduled.add(key)
+
+        def _flush() -> None:
+            with self._ui_lock:
+                self._scheduled.discard(key)
+                latest = self._latest.get(key)
+            if latest is not None and self._key_num(key) not in self._closed:
+                self._update_on_main(key, latest)
+
+        self._ui_after(_flush)
 
     def close_result(self, key: str) -> None:
-        callAfter(self._close_on_main, key)
+        with self._ui_lock:
+            self._mark_closed(key)
+            self._latest.pop(key, None)
+            self._scheduled.discard(key)  # 已在队列中的 flush 会被 _closed 挡下
+        self._ui_after(self._close_on_main, key)
 
     def _show_on_main(self, key: str, text: str) -> None:
+        if self._key_num(key) in self._closed:
+            return  # 面板已被关闭（迟到的 callAfter）
         panel = self._panels.get(key)
         if panel is None:
             panel = _ResultPanel()
@@ -307,20 +383,31 @@ class MacOSAdapter(PlatformAdapter):
         def _monitor(event):
             for key, panel in list(self._panels.items()):
                 if event.window() == panel.ns_panel and event.keyCode() == 53:  # Esc
+                    # 标记为已关闭：key 每次任务唯一，粘性集合可挡下
+                    # 已在队列中的 flush / 迟到的 show，防止面板被“复活”
+                    with self._ui_lock:
+                        self._mark_closed(key)
                     del self._panels[key]
                     panel.close()
                     return None  # 消费事件
             return event
 
         self._esc_handler = _monitor  # 防 GC
-        self._esc_monitor = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_(AppKit.NSKeyDownMask)
+        # 注意必须显式传 mask：pyobjc 不会自动补 NSKeyDownMask，漏传时监视器匹配不到任何按键
+        self._esc_monitor = AppKit.NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+            AppKit.NSKeyDownMask, _monitor
+        )
         # 注：addLocalMonitor 返回的对象与 handler 都必须保持引用
 
     # ------------------------------------------------------------------
     # 菜单栏
     # ------------------------------------------------------------------
     def _setup_menu_bar(self) -> None:
-        self._menu_actions = _MenuActions(self)
+        # 注：pyobjc 12 的通用构造路径（_genericNewClass）直接走 alloc().init()，
+        # 不会调用 Python 侧的 __init__，因此这里用属性挂载 adapter 而非构造参数。
+        actions = _MenuActions.alloc().init()
+        actions._adapter = self  # type: ignore[attr-defined]
+        self._menu_actions = actions
 
         bar = AppKit.NSStatusBar.systemStatusBar()
         item = bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
@@ -433,9 +520,12 @@ class _ResultPanel:
 
 
 class _MenuActions(NSObject):
-    def __init__(self, adapter: MacOSAdapter) -> None:
-        super().__init__()
-        self._adapter = adapter
+    """菜单栏动作目标。
+
+    不定义 __init__：pyobjc 12 的通用构造路径（_genericNewClass）直接调用
+    alloc().init()，Python 侧 __init__ 不会被触发；adapter 由 _setup_menu_bar
+    通过实例属性挂载。
+    """
 
     def openConfigFolderAction_(self, sender) -> None:  # noqa: N802
         import os

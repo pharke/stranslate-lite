@@ -2,6 +2,9 @@
 
 单飞（single-flight）模型：新触发的热键取消上一次仍在进行的任务（对齐 STranslate
 替换翻译的「运行中再次触发即取消」行为）。
+
+配置热重载：每次热键触发时重新读取配置文件，提示词 / API / 取词设置「保存即生效」；
+快捷键列表本身的增删改（绑定关系）在启动时注册，需重启才能变更。
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import threading
 from typing import Optional
 
 from .capture import CaptureError, capture_and_postprocess
-from .config import Config, Hotkey
+from .config import Config, ConfigError, Hotkey, load_config
 from .llm import CancelledError, CancelEvent, LlmClient, LlmError
 from .platform.base import PlatformAdapter
 from .prompts import render_messages
@@ -27,7 +30,6 @@ class App:
     def __init__(self, config: Config, adapter: PlatformAdapter):
         self.config = config
         self.adapter = adapter
-        self.client = LlmClient(config.api)
         self._lock = threading.Lock()
         self._current: Optional[CancelEvent] = None
         self._current_key: Optional[str] = None
@@ -38,7 +40,7 @@ class App:
     # ------------------------------------------------------------------
     def start(self) -> None:
         for hotkey in self.config.hotkeys:
-            cb = functools.partial(self.on_hotkey, hotkey)
+            cb = functools.partial(self.on_hotkey, hotkey.key)
             self.adapter.register_hotkey(hotkey.key, cb)
             logger.info("已注册快捷键 %s → 提示词“%s”", hotkey.key, hotkey.prompt)
         self.adapter.run()
@@ -51,9 +53,32 @@ class App:
         self.adapter.stop()
 
     # ------------------------------------------------------------------
+    # 配置热重载
+    # ------------------------------------------------------------------
+    def _reload_config(self) -> Optional[Config]:
+        """返回最新配置；读取失败返回 None（错误面板已在 on_hotkey 展示）。"""
+        try:
+            return load_config()
+        except ConfigError as e:
+            logger.warning("配置重载失败：%s", e)
+            key = f"job-{next(self._jobs)}"
+            self.adapter.show_result(key, f"配置重载失败：{e}")
+            return None
+
+    # ------------------------------------------------------------------
     # 热键回调（任意线程）
     # ------------------------------------------------------------------
-    def on_hotkey(self, hotkey: Hotkey) -> None:
+    def on_hotkey(self, key_spec: str) -> None:
+        cfg = self._reload_config()
+        if cfg is None:
+            return
+        hotkey = next((h for h in cfg.hotkeys if h.key == key_spec), None)
+        if hotkey is None:
+            logger.warning(
+                "快捷键 %s 已不在配置中（快捷键绑定变更需重启生效），忽略本次触发", key_spec
+            )
+            return
+        self.config = cfg
         with self._lock:
             if self._current is not None:
                 old_cancel, old_key = self._current, self._current_key
@@ -63,20 +88,20 @@ class App:
             key = f"job-{next(self._jobs)}"
             self._current = cancel
             self._current_key = key
-        threading.Thread(target=self._run_job, args=(hotkey, cancel, key), daemon=True, name=f"job-{key}").start()
+        threading.Thread(target=self._run_job, args=(cfg, hotkey, cancel, key), daemon=True, name=f"job-{key}").start()
 
     # ------------------------------------------------------------------
     # 任务线程
     # ------------------------------------------------------------------
-    def _run_job(self, hotkey: Hotkey, cancel: CancelEvent, key: str) -> None:
+    def _run_job(self, cfg: Config, hotkey: Hotkey, cancel: CancelEvent, key: str) -> None:
         try:
-            text = capture_and_postprocess(self.adapter, self.config.capture)
+            text = capture_and_postprocess(self.adapter, cfg.capture)
             if cancel.is_set():
                 raise CancelledError()
 
-            prompt = self.config.prompt(hotkey.prompt)
-            source = hotkey.source_lang or prompt.source_lang or self.config.api.source_lang
-            target = hotkey.target_lang or prompt.target_lang or self.config.api.target_lang
+            prompt = cfg.prompt(hotkey.prompt)
+            source = hotkey.source_lang or prompt.source_lang or cfg.api.source_lang
+            target = hotkey.target_lang or prompt.target_lang or cfg.api.target_lang
             messages = render_messages(prompt, text, source, target)
 
             self.adapter.show_result(key, _PENDING_TEXT)
@@ -91,9 +116,13 @@ class App:
                 buffer.append(t)
                 self.adapter.update_result(key, "".join(buffer))
 
-            self.client.chat_stream(messages, on_delta, cancel=cancel)
+            # 每次任务都用最新配置实例化客户端（配合配置热重载）
+            client = LlmClient(cfg.api)
+            client.chat_stream(messages, on_delta, cancel=cancel)
         except CancelledError:
             self.adapter.close_result(key)
+        except ConfigError as e:
+            self.adapter.show_result(key, f"配置错误：{e}")
         except CaptureError as e:
             self.adapter.show_result(key, f"取词失败：{e}")
         except LlmError as e:
