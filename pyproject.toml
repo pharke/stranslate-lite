@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stranslate-lite"
+version = "0.1.0"
+description = "快捷键划词 + 自定义提示词调用 LLM 的跨平台小工具（macOS 优先）"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = [
+    'tomli>=1.1; python_version < "3.11"',
+    'pyobjc-framework-Cocoa>=9; sys_platform == "darwin"',
+    'pyobjc-framework-Quartz>=9; sys_platform == "darwin"',
+    'pyobjc-framework-Carbon>=9; sys_platform == "darwin"',
+    'pyobjc-framework-ApplicationServices>=9; sys_platform == "darwin"',
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.scripts]
+stranslate-lite = "stranslate_lite.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["stranslate_lite*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
