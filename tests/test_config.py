@@ -101,7 +101,8 @@ def test_ui_section_defaults_and_parsing():
         "prompts": {"p": {"name": "p", "messages": [{"role": "user", "content": "x"}]}},
         "hotkeys": [{"key": "alt+q", "prompt": "p"}],
     }
-    assert parse_config(dict(base)).ui.auto_close_seconds == 15.0
+    assert parse_config(dict(base)).ui.auto_close_seconds == 0.0
+    assert parse_config({**base, "ui": {"auto_close_seconds": 15}}).ui.auto_close_seconds == 15.0
     assert parse_config({**base, "ui": {"auto_close_seconds": 0}}).ui.auto_close_seconds == 0.0
     with pytest.raises(ConfigError, match="范围"):
         parse_config({**base, "ui": {"auto_close_seconds": 9999}})

@@ -77,7 +77,9 @@ separators = "none"     # none | underscore | hyphen | both（代码翻译时建
 max_chars = 8000
 
 [ui]
-auto_close_seconds = 15  # 结果面板无更新后自动关闭秒数（0 = 永不；点击面板外随时关闭）
+# 结果面板无更新后自动关闭秒数：0 = 永不自动关闭（默认）；设为秒数（如 15）则无更新 N 秒后自动关闭。
+# 面板打开后：点击面板外 或 按 Esc 随时关闭。
+auto_close_seconds = 0
 
 [cache]
 enabled = true           # 近期翻译缓存：相同请求直接命中，省 token、零延迟

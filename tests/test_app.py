@@ -188,7 +188,7 @@ def test_auto_close_seconds_forwarded_to_adapter(app, monkeypatch):
     adapter.set_auto_close_seconds = lambda s: received.append(s)
 
     application.on_hotkey("alt+q")
-    assert received == [15.0]  # 默认配置值
+    assert received == [0.0]  # 默认配置值（0 = 永不自动关闭）
 
 
 def test_cache_hit_skips_llm(app, monkeypatch):
