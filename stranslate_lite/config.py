@@ -406,10 +406,10 @@ ttl_days = 7                # 缓存有效期（0 = 永不过期）
 name = "翻译"
 [[prompts."翻译".messages]]
 role = "system"
-content = "You are a professional translation engine. Your only task is to translate text into a language different from the source. Return only the translation, with no explanations or commentary."
+content = "You are a professional translation engine. Translate the input text into Simplified Chinese. Return only the translation, with no explanations or commentary."
 [[prompts."翻译".messages]]
 role = "user"
-content = "Translate the text below into the opposite language: if the text is predominantly Chinese, output English; otherwise output Simplified Chinese. The output language MUST always differ from the source language — never echo, rephrase, or return the input unchanged. Return only the translation:\\n\\n$content"
+content = "Translate the following text into Simplified Chinese. Return only the translation, with no explanations:\\n\\n$content"
 
 [prompts."代码审阅"]
 name = "代码审阅"
